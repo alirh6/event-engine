@@ -1,0 +1,2 @@
+# Runs on every commit: lint + format the staged files.
+npx lint-staged

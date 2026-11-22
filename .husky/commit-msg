@@ -1,0 +1,2 @@
+# Validates Conventional Commits messages.
+npx --no -- commitlint --edit "$1"

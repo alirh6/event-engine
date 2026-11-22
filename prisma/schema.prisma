@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Append-only event store — one row per ingested domain event.
+/// `sequence` provides a dense, globally ordered position used for pagination
+/// and replay cursors; `(aggregateType, aggregateId, version)` enforces
+/// optimistic concurrency per aggregate.
+model EventRecord {
+  id            String   @id @db.Uuid
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  payload       Json
+  metadata      Json?
+  version       Int      @default(1)
+  occurredAt    DateTime @db.Timestamptz(3)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  sequence      BigInt   @default(autoincrement())
+
+  @@unique([aggregateType, aggregateId, version], map: "events_aggregate_version_key")
+  @@index([eventType], map: "events_event_type_idx")
+  @@index([occurredAt(sort: Desc)], map: "events_occurred_at_idx")
+  @@map("events")
+}
+
+/// Durable audit trail for stream entries that exhausted their delivery
+/// attempts. The Redis stream stays lean; post-mortem analysis and replay
+/// happen from this table.
+model DeadLetterEvent {
+  id               String   @id @default(uuid()) @db.Uuid
+  streamName       String
+  consumerGroup    String
+  consumerName     String
+  redisEntryId     String
+  eventId          String?
+  eventType        String?
+  aggregateId      String?
+  payload          Json
+  errorType        String
+  errorMessage     String
+  deliveryAttempts Int
+  failedAt         DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([streamName, redisEntryId], map: "dead_letter_events_stream_entry_key")
+  @@index([failedAt(sort: Desc)], map: "dead_letter_events_failed_at_idx")
+  @@map("dead_letter_events")
+}

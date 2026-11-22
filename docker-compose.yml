@@ -1,0 +1,109 @@
+# Local development infrastructure for the event processing engine.
+# Usage: docker compose up -d   (or: npm run stack:up)
+name: event-engine
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: event-engine-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-event_engine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-event_engine}
+      POSTGRES_DB: ${POSTGRES_DB:-event_engine}
+      # Data checksums protect an append-heavy event store against silent corruption.
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER:-event_engine} -d $${POSTGRES_DB:-event_engine}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - event-engine
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: event-engine-redis
+    restart: unless-stopped
+    # Streams need durability (AOF) and must never silently evict entries.
+    command:
+      - 'redis-server'
+      - '--appendonly'
+      - 'yes'
+      - '--appendfsync'
+      - 'everysec'
+      - '--maxmemory'
+      - '512mb'
+      - '--maxmemory-policy'
+      - 'noeviction'
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - event-engine
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: event-engine-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    ports:
+      - '${PROMETHEUS_PORT:-9090}:9090'
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      # Lets Prometheus scrape the engine while it runs on the host (npm run dev).
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:9090/-/healthy']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - event-engine
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: event-engine-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+    ports:
+      - '${GRAFANA_PORT:-3001}:3000'
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - event-engine
+
+volumes:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  event-engine:
+    driver: bridge
